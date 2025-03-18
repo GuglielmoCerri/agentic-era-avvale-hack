@@ -65,11 +65,39 @@ def call_orchestrator(state: MessagesState, config: RunnableConfig) -> dict[str,
         "2. If the user asks for a graph call the agent specialized in generating a graph using data already retrieved\n"
         "3. If else answer to the user with available data and/or graph\n"
         # "You can decompose the request and process them iteratively.\n"
-        "Return a JSON in the following format:\n If 1: {\"query\": \"User request with additional deatils if needed\"}\n"
+        "Return a JSON in the following format:\n If 1: {\"query\": \"User request with additional details if needed\"}\n"
         "If 2: {\"graph\": \"User request with details on the graph style\"}\n"
         "If 3: answer to the user directly if none of the above is applicable\n"
         "Do not call any tools directly, just return the JSON."
         )
+    messages_with_system = [{"type": "system", "content": system_message}] + state["messages"]
+    response = llm.invoke(messages_with_system, config)
+    return {"messages": response}
+
+
+def call_validator(state: MessagesState, config: RunnableConfig) -> dict[str, BaseMessage]:
+    system_message = (
+        "You are a helpful AI assistant who must check whether available data can answer the user's question.\n"
+        "Analyze the user request and verify if relevant data exists in the following source: `qwiklabs-gcp-03-d68fba73ee2d.sales`.\n"
+        "In BigQuery we have the following table (sales_online): "
+        "Order_ID (INTEGER), Date (DATE), Customer (STRING), Product (STRING), "
+        "Quantity (INTEGER), Price_per_unit (INTEGER), Total_Amount (INTEGER), "
+        "Payment_Method (STRING)."
+        "Return a JSON response in one of the following formats:\n"
+        "If data is available: {\"valid\": \"User request with additional details\"}\n"
+        "If data is missing: {\"invalid\": \"User request with additional details on why the data is not sufficient to answer\"}\n"
+        "Do not call any tools directly, just return the JSON."
+    )
+    messages_with_system = [{"type": "system", "content": system_message}] + state["messages"]
+    response = llm.invoke(messages_with_system, config)
+    return {"messages": response}
+
+
+def call_finalizer(state: MessagesState, config: RunnableConfig) -> dict[str, BaseMessage]:
+    system_message = (
+        "You are a helpful AI assistant who gives the final response to the user.\n"
+        "Answer the user based on the output that you are provided with"
+    )
     messages_with_system = [{"type": "system", "content": system_message}] + state["messages"]
     response = llm.invoke(messages_with_system, config)
     return {"messages": response}
@@ -257,6 +285,21 @@ def generate_graph(json_input: str) -> str:
     
     return "Grafico generato e salvato come 'graph.png'."
 
+def check_validity(state: MessagesState) -> str:
+    """
+    Se i dati sono semanticamente rilevanti chiama l'agent incaricato di fare la query.
+    """
+    last_message = state["messages"][-1]
+    if hasattr(last_message, 'content') and last_message.content:
+        content = last_message.content
+        print(content)
+        if isinstance(content, str) and ("```json" in content or "{\"valid\":" in content):
+            return "decomposer_queries"
+        elif isinstance(content, str) and ("```json" in content or "{\"invalid\":" in content):
+            return "finalizer"
+    return END
+
+
 def how_to_continue(state: MessagesState) -> str:
     """
     Se l'ultimo messaggio contiene un comando JSON, prosegue con l'esecuzione della query,
@@ -266,7 +309,7 @@ def how_to_continue(state: MessagesState) -> str:
     if hasattr(last_message, 'content') and last_message.content:
         content = last_message.content
         if isinstance(content, str) and ("```json" in content or "{\"query\":" in content and not "{\"graph\":" in content):            
-            return "decomposer_queries"
+            return "validator"
         elif isinstance(content, str) and ("```json" in content or "{\"graph\":" in content):            
             return "decomposer_graph"
     return END
@@ -276,15 +319,19 @@ workflow = StateGraph(MessagesState)
 workflow.add_node("orchestrator", call_orchestrator) # agent
 workflow.add_node("generate_graph", execute_graph_from_response) # tool
 workflow.add_node("decomposer_queries", call_decomposer_queries) # agent
+workflow.add_node("finalizer", call_finalizer) # agent
+workflow.add_node("validator", call_validator) # agent
 workflow.add_node("decomposer_graph", call_decomposer_graph) # agent
 workflow.add_node("execute_queries", execute_query) # tool
 # ---------------------------------------
 workflow.set_entry_point("orchestrator")
 workflow.add_conditional_edges("orchestrator", how_to_continue)
+workflow.add_conditional_edges("validator", check_validity)
 workflow.add_edge("decomposer_queries", "execute_queries")
 workflow.add_edge("decomposer_graph", "generate_graph")
-workflow.add_edge("execute_queries", "orchestrator")
-workflow.add_edge("generate_graph", "orchestrator")
+workflow.add_edge("execute_queries", "finalizer")
+workflow.add_edge("generate_graph", "finalizer")
+workflow.add_edge("finalizer", END)
 
 agent = workflow.compile()
 # Ottieni l'immagine in formato PNG
