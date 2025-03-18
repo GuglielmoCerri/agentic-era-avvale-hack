@@ -1,31 +1,30 @@
 import json
-from langchain_core.messages import BaseMessage
+import matplotlib.pyplot as plt
+from langchain_core.messages import BaseMessage, AIMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from langchain_google_vertexai import ChatVertexAI
 from langgraph.graph import END, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode
 from google.cloud import bigquery
-from langchain_core.messages import AIMessage
 
+import json
+import matplotlib.pyplot as plt
+
+# Configurazioni iniziali
 LOCATION = "us-central1"
 LLM = "gemini-2.0-flash-001"
 
-# Initialize a BigQuery client
+# Inizializza il client BigQuery
 client = bigquery.Client()
 
-# 1. Define tools
-@tool
-def search(query: str) -> str:
-    """Simula una ricerca web per ottenere informazioni sul meteo."""
-    if "sf" in query.lower() or "san francisco" in query.lower():
-        return "It's 60 degrees and foggy."
-    return "It's 90 degrees and sunny."
-
+# =======================
+# 1. Query Agent: esegue query su BigQuery
+# =======================
 @tool
 def query_bigquery(query_str: str) -> list[dict]:
-    """Esegue una query SQL su BigQuery.
-   
+    """
+    Esegue una query SQL su BigQuery.
     Il parametro query_str deve essere una stringa JSON nel formato:
       {"query": "SELECT * FROM ..."}
     Restituisce i risultati della query come lista di dizionari.
@@ -37,91 +36,91 @@ def query_bigquery(query_str: str) -> list[dict]:
     except (json.JSONDecodeError, KeyError) as e:
         return [{"error": f"Formato di input non valido: {e}"}]
    
-    # Esegui la query
     try:
         query_job = client.query(sql_query)
         results = query_job.result()
-        # Converte i risultati in una lista di dizionari
         rows = [dict(row) for row in results]
         return rows
     except Exception as e:
         return [{"error": f"Errore nell'esecuzione della query: {str(e)}"}]
 
-tools = [query_bigquery]
+tools_query = [query_bigquery]
 
-# 2. Set up the language model
+# Imposta il modello di linguaggio (lo stesso LLM verrà usato per gli agenti)
 llm = ChatVertexAI(
     model=LLM,
     location=LOCATION,
     temperature=0,
     max_tokens=1024,
     streaming=True
-).bind_tools(tools)
+).bind_tools(tools_query)
 
-# 3. Define workflow components
-def should_continue(state: MessagesState) -> str:
-    """Determina se continuare con i tool o terminare la conversazione."""
-    last_message = state["messages"][-1]
-    
-    # Se l'ultimo messaggio contiene chiamate a tool, vai al nodo tools
-    if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
-        return "tools"
-    
-    # Controlla se c'è un comando di esecuzione nella risposta del modello
-    if hasattr(last_message, 'content') and last_message.content:
-        content = last_message.content
-        if isinstance(content, str) and ("```json" in content or "{\"query\":" in content):
-            return "execute_query"
-    
-    # Altrimenti termina
-    return END
 
-def call_model(state: MessagesState, config: RunnableConfig) -> dict[str, BaseMessage]:
-    """Chiama il modello di linguaggio e restituisce la risposta."""
+# Nodo per chiamare il modello e generare la query SQL
+def call_orchestrator(state: MessagesState, config: RunnableConfig) -> dict[str, BaseMessage]:
+    system_message = (
+        "You are a helpful AI assistant who must orchestrate an Agentic AI solution."
+        "You must decide whether to:\n"
+        "1. Call the query agent to query a certain table from bigquery to retrieve data\n"
+        "2. If the user asks for a graph call the agent specialized in generating a graph using data already retrieved\n"
+        "3. If else answer to the user with available data and/or graph\n"
+        # "You can decompose the request and process them iteratively.\n"
+        "Return a JSON in the following format:\n If 1: {\"query\": \"User request with additional deatils if needed\"}\n"
+        "If 2: {\"graph\": \"User request with details on the graph style\"}\n"
+        "If 3: answer to the user directly if none of the above is applicable\n"
+        "Do not call any tools directly, just return the JSON."
+        )
+    messages_with_system = [{"type": "system", "content": system_message}] + state["messages"]
+    response = llm.invoke(messages_with_system, config)
+    return {"messages": response}
+
+
+# Nodo per chiamare il modello e generare la query SQL
+def call_decomposer_queries(state: MessagesState, config: RunnableConfig) -> dict[str, BaseMessage]:
     system_message = (
         "You are a helpful AI assistant who must provide a SQL BigQuery query "
         "to analyze data as the user requests. You can query data from: "
         "`qwiklabs-gcp-03-d68fba73ee2d.sales`. "
         "Return a JSON in the following format: {\"query\": \"SELECT * FROM ...\"} "
-        "Do not use tool calls directly, just return the JSON."
-        "in bigquery we have the following tables:"
-        "sales_online:"
-        "Order_ID: un identificativo numerico dell'ordine (tipo INTEGER)."
-        "Date: la data in cui è stato effettuato l'ordine (tipo DATE)."
-        "Customer: il nome del cliente (tipo STRING)."
-        "Product: il prodotto ordinato (tipo STRING)."
-        "Quantity: la quantità del prodotto ordinato (tipo INTEGER)."
-        "Price_per_unit: il prezzo per unità del prodotto (tipo INTEGER)."
-        "Total_Amount: l'importo totale dell'ordine (tipo INTEGER)."
-        "Payment_Method: il metodo di pagamento utilizzato (tipo STRING)."
-        
+        "Do not use tool calls directly, just return the JSON. "
+        "In BigQuery we have the following table (sales_online): "
+        "Order_ID (INTEGER), Date (DATE), Customer (STRING), Product (STRING), "
+        "Quantity (INTEGER), Price_per_unit (INTEGER), Total_Amount (INTEGER), "
+        "Payment_Method (STRING)."
     )
     messages_with_system = [{"type": "system", "content": system_message}] + state["messages"]
-    # Propaga il RunnableConfig per supportare lo streaming della risposta.
     response = llm.invoke(messages_with_system, config)
     return {"messages": response}
 
-def execute_query_from_response(state: MessagesState) -> dict:
-    """Estrae ed esegue la query dall'ultimo messaggio"""
+def call_decomposer_graph(state: MessagesState, config: RunnableConfig) -> dict[str, BaseMessage]:
+    system_message = (
+        "You are a helpful AI assistant who must provide a JSON command to generate a graph using matplotlib. "
+        "Return a JSON in the following format: {\"chart\": \"bar\", \"data\": [{\"label\": \"A\", \"value\": 10}, ...]} "
+        "Optionally, you can include parameters such as 'title', 'xlabel', 'ylabel', and 'figsize' to customize the graph appearance. "
+        "Do not call any tools directly, just return the JSON."
+    )
+    messages_with_system = [{"type": "system", "content": system_message}] + state["messages"]
+    response = llm.invoke(messages_with_system, config)
+    return {"messages": response}
+
+
+def execute_query(state: MessagesState) -> dict:
+    """
+    Estrae ed esegue la query SQL dalla risposta del modello.
+    Cerca un JSON formattato come {"query": "..."}.
+    """
     last_message = state["messages"][-1]
     content = last_message.content
-    
-    # Estrai la query JSON dalla risposta
     json_query = None
-    
-    # Cerca di estrarre JSON da codice markdown
+    # Cerca il JSON racchiuso in ```json
     if "```json" in content:
-        # Estrai il contenuto tra ```json e ```
         json_start = content.find("```json") + 7
         json_end = content.find("```", json_start)
         if json_end > json_start:
             json_query = content[json_start:json_end].strip()
-    
-    # Se non è in formato markdown, cerca direttamente
+    # Altrimenti cerca il JSON direttamente
     if not json_query and "{\"query\":" in content:
-        # Cerca di estrarre il JSON che inizia con {"query":
         json_start = content.find("{\"query\":")
-        # Trova la fine del JSON (la parentesi graffa di chiusura)
         brace_count = 1
         for i in range(json_start + 1, len(content)):
             if content[i] == '{':
@@ -135,10 +134,7 @@ def execute_query_from_response(state: MessagesState) -> dict:
             json_query = content[json_start:json_end].strip()
     
     if json_query:
-        # Esegui la query utilizzando lo strumento query_bigquery
         result = query_bigquery(json_query)
-        
-        
         result_message = AIMessage(
             content=f"Ho eseguito la query e ecco i risultati:\n\n{result}"
         )
@@ -149,21 +145,153 @@ def execute_query_from_response(state: MessagesState) -> dict:
     )
     return {"messages": [error_message]}
 
-# 4. Create the workflow graph
+def execute_graph_from_response(state: MessagesState) -> dict:
+    """
+    Estrae il comando JSON per generare il grafico dalla risposta del modello
+    e lo esegue tramite il tool generate_graph.
+    Cerca il JSON racchiuso tra ```json ... ``` oppure direttamente come stringa.
+    """
+    print("graph creation")
+    last_message = state["messages"][-1]
+    content = last_message.content
+    json_command = None
+
+    # Cerca il blocco JSON delimitato da ```json ... ```
+    if "```json" in content:
+        json_start = content.find("```json") + 7
+        json_end = content.find("```", json_start)
+        if json_end > json_start:
+            json_command = content[json_start:json_end].strip()
+
+    # Se non è presente il blocco, cerca il JSON direttamente nel testo
+    if not json_command and "{\"chart\":" in content:
+        json_start = content.find("{\"chart\":")
+        brace_count = 1
+        for i in range(json_start + 1, len(content)):
+            if content[i] == '{':
+                brace_count += 1
+            elif content[i] == '}':
+                brace_count -= 1
+                if brace_count == 0:
+                    json_end = i + 1
+                    break
+        if brace_count == 0:
+            json_command = content[json_start:json_end].strip()
+
+    if json_command:
+        result = generate_graph(json_command)
+        result_message = AIMessage(
+            content=f"Ho generato il grafico: {result}"
+        )
+        return {"messages": [result_message]}
+
+    error_message = AIMessage(
+        content="Non sono riuscito a estrarre un comando JSON valido per generare il grafico."
+    )
+    return {"messages": [error_message]}
+
+def generate_graph(json_input: str) -> str:
+    """
+    Genera un grafico usando matplotlib in modo generalizzato.
+    
+    Il parametro json_input deve essere una stringa JSON con il seguente formato:
+    
+    {
+        "chart": "bar",           # Tipo di grafico: 'bar', 'line', 'pie', 'scatter'
+        "data": [
+            {"label": "A", "value": 10},
+            {"label": "B", "value": 20}
+        ],
+        "title": "Titolo del grafico",      # Opzionale
+        "xlabel": "Etichetta X",             # Opzionale
+        "ylabel": "Etichetta Y",             # Opzionale
+        "figsize": [8, 6]                    # Opzionale: dimensione della figura (larghezza, altezza)
+    }
+    
+    Salva il grafico come 'graph.png' e restituisce un messaggio di conferma.
+    """
+    try:
+        config = json.loads(json_input)
+        chart_type = config.get("chart")
+        data_points = config.get("data")
+        title = config.get("title", "Grafico Generato")
+        xlabel = config.get("xlabel", "X")
+        ylabel = config.get("ylabel", "Y")
+        figsize = config.get("figsize", [8, 6])
+    except Exception as e:
+        return f"Errore nel parsing del JSON: {str(e)}"
+    
+    # Validazione dei dati obbligatori
+    if not chart_type or not data_points:
+        return "Errore: i campi 'chart' e 'data' sono obbligatori."
+    
+    if not isinstance(data_points, list) or not all(
+        isinstance(dp, dict) and "label" in dp and "value" in dp for dp in data_points
+    ):
+        return "Errore: il campo 'data' deve essere una lista di oggetti con chiavi 'label' e 'value'."
+    
+    labels = [dp["label"] for dp in data_points]
+    values = [dp["value"] for dp in data_points]
+    
+    plt.figure(figsize=figsize)
+    
+    if chart_type == "bar":
+        plt.bar(labels, values)
+    elif chart_type == "line":
+        plt.plot(labels, values, marker='o')
+    elif chart_type == "pie":
+        plt.pie(values, labels=labels, autopct='%1.1f%%')
+    elif chart_type == "scatter":
+        # Per lo scatter plot usiamo gli indici come coordinate x
+        plt.scatter(range(len(values)), values)
+        plt.xticks(range(len(labels)), labels)
+    else:
+        return "Errore: tipo di grafico non supportato. Usa 'bar', 'line', 'pie' o 'scatter'."
+    
+    plt.title(title)
+    plt.xlabel(xlabel)
+    plt.ylabel(ylabel)
+    plt.tight_layout()
+    plt.savefig("graph.png")
+    plt.close()
+    
+    return "Grafico generato e salvato come 'graph.png'."
+
+def how_to_continue(state: MessagesState) -> str:
+    """
+    Se l'ultimo messaggio contiene un comando JSON, prosegue con l'esecuzione della query,
+    altrimenti termina.
+    """
+    last_message = state["messages"][-1]
+    if hasattr(last_message, 'content') and last_message.content:
+        content = last_message.content
+        if isinstance(content, str) and ("```json" in content or "{\"query\":" in content and not "{\"graph\":" in content):            
+            return "decomposer_queries"
+        elif isinstance(content, str) and ("```json" in content or "{\"graph\":" in content):            
+            return "decomposer_graph"
+    return END
+
+
 workflow = StateGraph(MessagesState)
-workflow.add_node("agent", call_model)
-workflow.add_node("tools", ToolNode(tools))
-workflow.add_node("execute_query", execute_query_from_response)
-workflow.set_entry_point("agent")
+workflow.add_node("orchestrator", call_orchestrator) # agent
+workflow.add_node("generate_graph", execute_graph_from_response) # tool
+workflow.add_node("decomposer_queries", call_decomposer_queries) # agent
+workflow.add_node("decomposer_graph", call_decomposer_graph) # agent
+workflow.add_node("execute_queries", execute_query) # tool
+# ---------------------------------------
+workflow.set_entry_point("orchestrator")
+workflow.add_conditional_edges("orchestrator", how_to_continue)
+workflow.add_edge("decomposer_queries", "execute_queries")
+workflow.add_edge("decomposer_graph", "generate_graph")
+workflow.add_edge("execute_queries", "orchestrator")
+workflow.add_edge("generate_graph", "orchestrator")
 
-# 5. Define graph edges
-workflow.add_conditional_edges("agent", should_continue)
-workflow.add_edge("tools", "agent")
-workflow.add_edge("execute_query", END)
-
-# 6. Compile the workflow
 agent = workflow.compile()
+# Ottieni l'immagine in formato PNG
+png_data = agent.get_graph().draw_mermaid_png()
 
-# Esempio di utilizzo:
-# response = agent.invoke({"messages": [HumanMessage(content="Quante vendite abbiamo avuto per ogni prodotto nel 2023?")]})
-# print(response)
+# Salva l'immagine in un file chiamato "graph.png"
+with open("graph_.png", "wb") as file:
+    file.write(png_data)
+
+print("Il grafico è stato salvato come 'graph.png'")
