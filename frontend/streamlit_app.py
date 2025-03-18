@@ -37,12 +37,17 @@ EMPTY_CHAT_NAME = "Empty chat"
 def setup_page() -> None:
     """Configure the Streamlit page settings."""
     st.set_page_config(
-        page_title="Playground",
+        page_title="Avvale Playground",
         layout="wide",
         initial_sidebar_state="auto",
+        page_icon="frontend/assets/logo.png",
         menu_items=None,
     )
-    st.title("Playground")
+    st.markdown(
+        "<h1 style='text-align: center;'>🚀 Avvale Playground</h1>",
+        unsafe_allow_html=True,
+    )
+
     st.markdown(MARKDOWN_STR, unsafe_allow_html=True)
 
 
