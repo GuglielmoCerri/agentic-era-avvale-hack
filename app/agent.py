@@ -16,15 +16,14 @@ from pydantic import BaseModel, Field
 import json
 import matplotlib.pyplot as plt
 
-# Configurazioni iniziali
+# Initial configurations
 LOCATION = "us-central1"
 LLM = "gemini-2.0-flash-001"
 
-# Inizializza il client BigQuery
+# Initialize BigQuery client
 client = bigquery.Client()
 
-
-# Imposta il modello di linguaggio (lo stesso LLM verrà usato per gli agenti)
+# Set up language model (the same LLM will be used for agents)
 llm = ChatVertexAI(
     model=LLM,
     location=LOCATION,
@@ -37,17 +36,17 @@ llm = ChatVertexAI(
 @tool
 def query_bigquery(query_str: str) -> list[dict]:
     """
-    Esegue una query SQL su BigQuery.
-    Il parametro query_str deve essere una stringa JSON nel formato:
+    Executes a SQL query on BigQuery.
+    The query_str parameter must be a JSON string in the format:
       {"query": "SELECT * FROM ..."}
-    Restituisce i risultati della query come lista di dizionari.
+    Returns the query results as a list of dictionaries.
     """
     try:
         data = json.loads(query_str)
         sql_query = data["query"]
-        print(f"Esecuzione query: {sql_query}")
+        print(f"Executing query: {sql_query}")
     except (json.JSONDecodeError, KeyError) as e:
-        return [{"error": f"Formato di input non valido: {e}"}]
+        return [{"error": f"Invalid input format: {e}"}]
    
     try:
         query_job = client.query(sql_query)
@@ -55,24 +54,24 @@ def query_bigquery(query_str: str) -> list[dict]:
         rows = [dict(row) for row in results]
         return rows
     except Exception as e:
-        return [{"error": f"Errore nell'esecuzione della query: {str(e)}"}]
+        return [{"error": f"Error executing query: {str(e)}"}]
 
 @tool
 def execute_query(state: MessagesState) -> dict:
     """
-    Estrae ed esegue la query SQL dalla risposta del modello.
-    Cerca un JSON formattato come {"query": "..."}.
+    Extracts and executes the SQL query from the model's response.
+    Looks for a JSON formatted as {"query": "..."}.
     """
     last_message = state["messages"][-1]
     content = last_message.content
     json_query = None
-    # Cerca il JSON racchiuso in ```json
+    # Look for JSON enclosed in ```json
     if "```json" in content:
         json_start = content.find("```json") + 7
         json_end = content.find("```", json_start)
         if json_end > json_start:
             json_query = content[json_start:json_end].strip()
-    # Altrimenti cerca il JSON direttamente
+    # Otherwise look for JSON directly
     if not json_query and "{\"query\":" in content:
         json_start = content.find("{\"query\":")
         brace_count = 1
@@ -90,12 +89,12 @@ def execute_query(state: MessagesState) -> dict:
     if json_query:
         result = query_bigquery(json_query)
         result_message = AIMessage(
-            content=f"Ho eseguito la query e ecco i risultati:\n\n{result}"
+            content=f"I executed the query and here are the results:\n\n{result}"
         )
         return {"messages": [result_message]}
     
     error_message = AIMessage(
-        content="Non sono riuscito a estrarre una query SQL valida dalla risposta."
+        content="I couldn't extract a valid SQL query from the response."
     )
     return {"messages": [error_message]}
 
@@ -111,14 +110,14 @@ def execute_graph_from_response(state: MessagesState) -> dict:
     content = last_message.content
     json_command = None
 
-    # Cerca il blocco JSON delimitato da ```json ... ```
+    # Look for JSON block delimited by ```json ... ```
     if "```json" in content:
         json_start = content.find("```json") + 7
         json_end = content.find("```", json_start)
         if json_end > json_start:
             json_command = content[json_start:json_end].strip()
 
-    # Se non è presente il blocco, cerca il JSON direttamente nel testo
+    # If no block is present, look for JSON directly in the text
     if not json_command and "{\"chart\":" in content:
         json_start = content.find("{\"chart\":")
         brace_count = 1
@@ -136,55 +135,55 @@ def execute_graph_from_response(state: MessagesState) -> dict:
     if json_command:
         result = generate_graph(json_command)
         result_message = AIMessage(
-            content=f"Ho generato il grafico: {result}"
+            content=f"I generated the graph: {result}"
         )
         return {"messages": [result_message]}
 
     error_message = AIMessage(
-        content="Non sono riuscito a estrarre un comando JSON valido per generare il grafico."
+        content="I couldn't extract a valid JSON command to generate the graph."
     )
     return {"messages": [error_message]}
 
 @tool
 def generate_graph(json_input: str) -> str:
     """
-    Genera un grafico usando matplotlib in modo generalizzato.
+    Generates a graph using matplotlib in a generalized way.
     
-    Il parametro json_input deve essere una stringa JSON con il seguente formato:
+    The json_input parameter must be a JSON string with the following format:
     
     {
-        "chart": "bar",           # Tipo di grafico: 'bar', 'line', 'pie', 'scatter'
+        "chart": "bar",           # Chart type: 'bar', 'line', 'pie', 'scatter'
         "data": [
             {"label": "A", "value": 10},
             {"label": "B", "value": 20}
         ],
-        "title": "Titolo del grafico",      # Opzionale
-        "xlabel": "Etichetta X",             # Opzionale
-        "ylabel": "Etichetta Y",             # Opzionale
-        "figsize": [8, 6]                    # Opzionale: dimensione della figura (larghezza, altezza)
+        "title": "Chart Title",      # Optional
+        "xlabel": "X Label",          # Optional
+        "ylabel": "Y Label",          # Optional
+        "figsize": [8, 6]             # Optional: figure size (width, height)
     }
     
-    Salva il grafico come 'graph.png' e restituisce un messaggio di conferma.
+    Saves the chart as 'graph.png' and returns a confirmation message.
     """
     try:
         config = json.loads(json_input)
         chart_type = config.get("chart")
         data_points = config.get("data")
-        title = config.get("title", "Grafico Generato")
+        title = config.get("title", "Generated Chart")
         xlabel = config.get("xlabel", "X")
         ylabel = config.get("ylabel", "Y")
         figsize = config.get("figsize", [8, 6])
     except Exception as e:
-        return f"Errore nel parsing del JSON: {str(e)}"
+        return f"Error parsing JSON: {str(e)}"
     
-    # Validazione dei dati obbligatori
+    # Validate required data
     if not chart_type or not data_points:
-        return "Errore: i campi 'chart' e 'data' sono obbligatori."
+        return "Error: 'chart' and 'data' fields are required."
     
     if not isinstance(data_points, list) or not all(
         isinstance(dp, dict) and "label" in dp and "value" in dp for dp in data_points
     ):
-        return "Errore: il campo 'data' deve essere una lista di oggetti con chiavi 'label' e 'value'."
+        return "Error: 'data' field must be a list of objects with 'label' and 'value' keys."
     
     labels = [dp["label"] for dp in data_points]
     values = [dp["value"] for dp in data_points]
@@ -198,11 +197,11 @@ def generate_graph(json_input: str) -> str:
     elif chart_type == "pie":
         plt.pie(values, labels=labels, autopct='%1.1f%%')
     elif chart_type == "scatter":
-        # Per lo scatter plot usiamo gli indici come coordinate x
+        # For scatter plot we use indices as x coordinates
         plt.scatter(range(len(values)), values)
         plt.xticks(range(len(labels)), labels)
     else:
-        return "Errore: tipo di grafico non supportato. Usa 'bar', 'line', 'pie' o 'scatter'."
+        return "Error: Unsupported chart type. Use 'bar', 'line', 'pie', or 'scatter'."
     
     plt.title(title)
     plt.xlabel(xlabel)
@@ -211,21 +210,28 @@ def generate_graph(json_input: str) -> str:
     plt.savefig("graph.png")
     plt.close()
     
-    return "Grafico generato e salvato come 'graph.png'."
+    return "Chart generated and saved as 'graph.png'."
 
 # -------- AGENT NETWORK DEFINITION --------
 
-members = ["graph creator", "data analyst"]
+members = ["conversation assistant", "graph creator", "data analyst"]
 # Our team supervisor is an LLM node. It just picks the next agent to process
 # and decides when the work is completed
 options = members + ["FINISH"]
 
+# Modified orchestrator system prompt to ensure proper routing
 orchestrator_system_prompt = (
     "You are a supervisor tasked with managing a conversation between the"
     f" following workers: {members}. Given the following user request,"
-    " respond with the worker to act next. Each worker will perform a"
-    " task and respond with their results and status. When finished,"
-    " respond with FINISH."
+    " respond with the worker to act next."
+    "\n\nIMPORTANT ROUTING RULES:"
+    "\n1. If the user message is a greeting (like 'Hello', 'Hi', etc.) or a general question,"
+    " route to 'conversation assistant'."
+    "\n2. If the user asks for data analysis or information that requires database queries"
+    " (like 'give me the top 5 best-selling products'), route to 'data analyst'."
+    "\n3. If the user asks for visualizations or charts based on data, route to 'graph creator'."
+    "\n4. Route to FINISH only when an agent has provided a complete response to the user's query."
+    "\n5. ALWAYS look at the latest user message to determine the appropriate route."
 )
 
 
@@ -236,22 +242,77 @@ class TaskAssignment(BaseModel):
 
 class Router(TypedDict):
     """Worker to route to next. If no workers needed, route to FINISH."""
-
     next: Literal[*options]
+
 
 class State(MessagesState):
     next: str
 
-def orchestrator_node(state: State) -> Command[Literal[*members, "__end__"]]:
-    messages = [
-        {"role": "system", "content": orchestrator_system_prompt},
-    ] + state["messages"]
-    response = llm.with_structured_output(TaskAssignment).invoke(messages)
-    goto = response.next
-    if goto == "FINISH":
-        goto = END
 
+# Simplified orchestrator node without the conversation_handled flag
+def orchestrator_node(state: State) -> Command[Literal[*members, "__end__"]]:
+    messages = state["messages"]
+    
+    # Controlla se l'ultimo messaggio proviene da un agente
+    if len(messages) > 0 and hasattr(messages[-1], 'name') and messages[-1].name in members:
+        # Se l'ultimo messaggio è da un agente, attendi un nuovo input dall'utente
+        return Command(goto=END, update={"next": END})
+    
+    # Prepara un unico messaggio per l'orchestratore che include il sistema e l'input dell'utente
+    prompt = f"{orchestrator_system_prompt}\n\nUser says: {messages[-1].content}\n\nWhich worker should handle this request?"
+    
+    # Usa un prompt diretto invece di gestire complesse strutture di messaggi
+    response = llm.invoke(prompt)
+    
+    # Analizza la risposta per determinare il routing
+    content = response.content.lower()
+    
+    if "data analyst" in content:
+        goto = "data analyst"
+    elif "graph creator" in content:
+        goto = "graph creator"
+    elif "conversation assistant" in content:
+        goto = "conversation assistant"
+    else:
+        goto = END
+    
     return Command(goto=goto, update={"next": goto})
+
+
+# Conversation assistant node
+def conversation_assistant_node(state: State) -> Command[Literal["orchestrator"]]:
+    # Get messages
+    messages = state["messages"]
+    
+    # Prepare system prompt for conversation assistant
+    conversation_system_prompt = (
+        "You are a friendly, conversational assistant. "
+        "Respond to greetings and general questions in a colloquial manner. "
+        "When introducing yourself, briefly explain that you can: "
+        "1) Analyze data from the BigQuery database with the sales_online table "
+        "2) Create charts to visualize data "
+        "Don't offer to run queries or create charts unless specifically requested by the user."
+        "\n\nIMPORTANT: Provide a BRIEF and CONCISE response. "
+        "Don't repeat the same information if the user sends multiple greetings. "
+        "If the user is just greeting, respond with a simple greeting and a brief description of your capabilities."
+    )
+    
+    # Add system prompt to the beginning of messages
+    system_message = {"role": "system", "content": conversation_system_prompt}
+    all_messages = [system_message] + messages
+    
+    # Get response from the model
+    response = llm.invoke(all_messages)
+    
+    # Create a response message with the agent's name
+    return Command(
+        update={
+            "messages": [
+                HumanMessage(content=response.content, name="conversation assistant")
+            ]
+        },
+        goto="orchestrator",
+    )
 
 
 graph_creator_agent = create_react_agent(
@@ -296,19 +357,22 @@ def data_analyst_node(state: State) -> Command[Literal["orchestrator"]]:
     )
 
 
+# Define the workflow
 workflow = StateGraph(State)
 workflow.add_edge(START, "orchestrator")
 workflow.add_node("orchestrator", orchestrator_node)
+workflow.add_node("conversation assistant", conversation_assistant_node)
 workflow.add_node("graph creator", graph_creator_node)
 workflow.add_node("data analyst", data_analyst_node)
+
+# Compile the agent
 agent = workflow.compile()
 
-
-# Ottieni l'immagine in formato PNG
+# Get the image in PNG format
 png_data = agent.get_graph().draw_mermaid_png()
 
-# Salva l'immagine in un file chiamato "graph.png"
+# Save the image to a file named "graph.png"
 with open("graph_2.png", "wb") as file:
     file.write(png_data)
 
-print("Il grafico è stato salvato come 'graph.png'")
+#print("The graph has been saved as 'graph.png'")
