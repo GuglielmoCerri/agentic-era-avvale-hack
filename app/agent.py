@@ -52,98 +52,35 @@ def query_bigquery(query_str: str) -> list[dict]:
     try:
         query_job = client.query(sql_query)
         results = query_job.result()
-        rows = [dict(row) for row in results]
-        return rows
+        try:
+            rows = [dict(row) for row in results]
+            return rows
+        except:
+            return rows
     except Exception as e:
         return [{"error": f"Errore nell'esecuzione della query: {str(e)}"}]
 
 @tool
-def execute_query(state: MessagesState) -> dict:
+def bigquery_ml(query_str: str) -> list[dict]:
     """
-    Estrae ed esegue la query SQL dalla risposta del modello.
-    Cerca un JSON formattato come {"query": "..."}.
+    Esegue una query SQL su BigQuery di machine Learning.
+    Il parametro query_str deve essere una stringa JSON nel formato:
+      {"query": "..."}
+    Restituisce i risultati della query come lista di dizionari se esiste se no l'esito della query.
     """
-    last_message = state["messages"][-1]
-    content = last_message.content
-    json_query = None
-    # Cerca il JSON racchiuso in ```json
-    if "```json" in content:
-        json_start = content.find("```json") + 7
-        json_end = content.find("```", json_start)
-        if json_end > json_start:
-            json_query = content[json_start:json_end].strip()
-    # Altrimenti cerca il JSON direttamente
-    if not json_query and "{\"query\":" in content:
-        json_start = content.find("{\"query\":")
-        brace_count = 1
-        for i in range(json_start + 1, len(content)):
-            if content[i] == '{':
-                brace_count += 1
-            elif content[i] == '}':
-                brace_count -= 1
-                if brace_count == 0:
-                    json_end = i + 1
-                    break
-        if brace_count == 0:
-            json_query = content[json_start:json_end].strip()
-    
-    if json_query:
-        result = query_bigquery(json_query)
-        result_message = AIMessage(
-            content=f"Ho eseguito la query e ecco i risultati:\n\n{result}"
-        )
-        return {"messages": [result_message]}
-    
-    error_message = AIMessage(
-        content="Non sono riuscito a estrarre una query SQL valida dalla risposta."
-    )
-    return {"messages": [error_message]}
-
-@tool
-def execute_graph_from_response(state: MessagesState) -> dict:
-    """
-    Extract the JSON command to generate the graph from the model response 
-    and execute it using the generate_graph tool.
-    Looks for the JSON between ```json ... ``` or directly as a string.
-    """
-    print("graph creation")
-    last_message = state["messages"][-1]
-    content = last_message.content
-    json_command = None
-
-    # Cerca il blocco JSON delimitato da ```json ... ```
-    if "```json" in content:
-        json_start = content.find("```json") + 7
-        json_end = content.find("```", json_start)
-        if json_end > json_start:
-            json_command = content[json_start:json_end].strip()
-
-    # Se non è presente il blocco, cerca il JSON direttamente nel testo
-    if not json_command and "{\"chart\":" in content:
-        json_start = content.find("{\"chart\":")
-        brace_count = 1
-        for i in range(json_start + 1, len(content)):
-            if content[i] == '{':
-                brace_count += 1
-            elif content[i] == '}':
-                brace_count -= 1
-                if brace_count == 0:
-                    json_end = i + 1
-                    break
-        if brace_count == 0:
-            json_command = content[json_start:json_end].strip()
-
-    if json_command:
-        result = generate_graph(json_command)
-        result_message = AIMessage(
-            content=f"Ho generato il grafico: {result}"
-        )
-        return {"messages": [result_message]}
-
-    error_message = AIMessage(
-        content="Non sono riuscito a estrarre un comando JSON valido per generare il grafico."
-    )
-    return {"messages": [error_message]}
+    try:
+        data = json.loads(query_str)
+        sql_query = data["query"]
+        print(f"Esecuzione query: {sql_query}")
+    except (json.JSONDecodeError, KeyError) as e:
+        return [{"error": f"Formato di input non valido: {e}"}]
+   
+    try:
+        query_job = client.query(sql_query)
+        results = query_job.result()
+        return results
+    except Exception as e:
+        return [{"error": f"Errore nell'esecuzione della query: {str(e)}"}]
 
 @tool
 def generate_graph(json_input: str) -> str:
@@ -215,7 +152,7 @@ def generate_graph(json_input: str) -> str:
 
 # -------- AGENT NETWORK DEFINITION --------
 
-members = ["graph creator", "data analyst"]
+members = ["data analyst"]
 # Our team supervisor is an LLM node. It just picks the next agent to process
 # and decides when the work is completed
 options = members + ["FINISH"]
@@ -249,14 +186,19 @@ def orchestrator_node(state: State) -> Command[Literal[*members, "__end__"]]:
     response = llm.with_structured_output(TaskAssignment).invoke(messages)
     goto = response.next
     if goto == "FINISH":
-        goto = END
+        # Invece di proseguire, crea un messaggio finale per l'utente
+        final_message = AIMessage(content="Ecco il risultato finale del processo.")
+        # Aggiorna lo stato aggiungendo il messaggio finale
+        state["messages"].append(final_message)
+        # Termina il workflow restituendo lo stato aggiornato
+        return Command(goto=END, update={"messages": state["messages"]})
 
     return Command(goto=goto, update={"next": goto})
 
 
 graph_creator_agent = create_react_agent(
     llm, tools=[
-        execute_graph_from_response, generate_graph
+        generate_graph
     ], prompt="You are a helpful AI assistant who must provide a JSON command to generate a graph using matplotlib. "
         "Return a JSON in the following format: {\"chart\": \"bar\", \"data\": [{\"label\": \"A\", \"value\": 10}, ...]} "
         "Optionally, you can include parameters such as 'title', 'xlabel', 'ylabel', and 'figsize' to customize the graph appearance."
@@ -273,15 +215,46 @@ def graph_creator_node(state: State) -> Command[Literal["orchestrator"]]:
         goto="orchestrator",
     )
 
+ 
+data_analyst_agent = create_react_agent(llm, tools=[query_bigquery, bigquery_ml, generate_graph], 
+    prompt = "You are a helpful AI assistant who must can query data from bigquery, generate graph and create bigquery models or query them (bigquery_ml)."
+            "You can query data from: "
+            "`qwiklabs-gcp-03-d68fba73ee2d.sales`. "
+            "\nIn BigQuery we have the following tables:"
+            "sales_online, customer, product e review)"
+            """sales_online:
 
-data_analyst_agent = create_react_agent(llm, tools=[query_bigquery], 
-prompt = "You are a helpful AI assistant who must provide a SQL BigQuery query "
-        "to analyze data as the user requests. You can query data from: "
-        "`qwiklabs-gcp-03-d68fba73ee2d.sales`. "
-        "In BigQuery we have the following table (sales_online): "
-        "Order_ID (INTEGER), Date (DATE), Customer (STRING), Product (STRING), "
-        "Quantity (INTEGER), Price_per_unit (INTEGER), Total_Amount (INTEGER), "
-        "Payment_Method (STRING).")
+            Order_ID: INTEGER, NULLABLE
+            Date: DATE, NULLABLE
+            Customer: STRING, NULLABLE
+            Product: STRING, NULLABLE
+            Quantity: INTEGER, NULLABLE
+            Price_per_unit: INTEGER, NULLABLE
+            Total_Amount: INTEGER, NULLABLE
+            Payment_Method: STRING, NULLABLE
+            
+            review:
+
+            ReviewID: INTEGER, NULLABLE
+            CustomerID: INTEGER, NULLABLE
+            ProductID: INTEGER, NULLABLE
+            Rating: INTEGER, NULLABLE
+            ReviewText: STRING, NULLABLE
+            ReviewDate: DATE, NULLABLE
+
+            product:
+
+            ProductID: INTEGER, NULLABLE
+            ProductName: STRING, NULLABLE
+            Category: STRING, NULLABLE
+            Price: INTEGER, NULLABLE
+
+            customer:
+
+            CustomerID: INTEGER, NULLABLE
+            CustomerName: STRING, NULLABLE""")
+
+
 
 
 def data_analyst_node(state: State) -> Command[Literal["orchestrator"]]:
@@ -299,7 +272,6 @@ def data_analyst_node(state: State) -> Command[Literal["orchestrator"]]:
 workflow = StateGraph(State)
 workflow.add_edge(START, "orchestrator")
 workflow.add_node("orchestrator", orchestrator_node)
-workflow.add_node("graph creator", graph_creator_node)
 workflow.add_node("data analyst", data_analyst_node)
 agent = workflow.compile()
 
