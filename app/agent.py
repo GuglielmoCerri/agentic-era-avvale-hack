@@ -57,94 +57,6 @@ def query_bigquery(query_str: str) -> list[dict]:
         return [{"error": f"Error executing query: {str(e)}"}]
 
 @tool
-def execute_query(state: MessagesState) -> dict:
-    """
-    Extracts and executes the SQL query from the model's response.
-    Looks for a JSON formatted as {"query": "..."}.
-    """
-    last_message = state["messages"][-1]
-    content = last_message.content
-    json_query = None
-    # Look for JSON enclosed in ```json
-    if "```json" in content:
-        json_start = content.find("```json") + 7
-        json_end = content.find("```", json_start)
-        if json_end > json_start:
-            json_query = content[json_start:json_end].strip()
-    # Otherwise look for JSON directly
-    if not json_query and "{\"query\":" in content:
-        json_start = content.find("{\"query\":")
-        brace_count = 1
-        for i in range(json_start + 1, len(content)):
-            if content[i] == '{':
-                brace_count += 1
-            elif content[i] == '}':
-                brace_count -= 1
-                if brace_count == 0:
-                    json_end = i + 1
-                    break
-        if brace_count == 0:
-            json_query = content[json_start:json_end].strip()
-    
-    if json_query:
-        result = query_bigquery(json_query)
-        result_message = AIMessage(
-            content=f"I executed the query and here are the results:\n\n{result}"
-        )
-        return {"messages": [result_message]}
-    
-    error_message = AIMessage(
-        content="I couldn't extract a valid SQL query from the response."
-    )
-    return {"messages": [error_message]}
-
-@tool
-def execute_graph_from_response(state: MessagesState) -> dict:
-    """
-    Extract the JSON command to generate the graph from the model response 
-    and execute it using the generate_graph tool.
-    Looks for the JSON between ```json ... ``` or directly as a string.
-    """
-    print("graph creation")
-    last_message = state["messages"][-1]
-    content = last_message.content
-    json_command = None
-
-    # Look for JSON block delimited by ```json ... ```
-    if "```json" in content:
-        json_start = content.find("```json") + 7
-        json_end = content.find("```", json_start)
-        if json_end > json_start:
-            json_command = content[json_start:json_end].strip()
-
-    # If no block is present, look for JSON directly in the text
-    if not json_command and "{\"chart\":" in content:
-        json_start = content.find("{\"chart\":")
-        brace_count = 1
-        for i in range(json_start + 1, len(content)):
-            if content[i] == '{':
-                brace_count += 1
-            elif content[i] == '}':
-                brace_count -= 1
-                if brace_count == 0:
-                    json_end = i + 1
-                    break
-        if brace_count == 0:
-            json_command = content[json_start:json_end].strip()
-
-    if json_command:
-        result = generate_graph(json_command)
-        result_message = AIMessage(
-            content=f"I generated the graph: {result}"
-        )
-        return {"messages": [result_message]}
-
-    error_message = AIMessage(
-        content="I couldn't extract a valid JSON command to generate the graph."
-    )
-    return {"messages": [error_message]}
-
-@tool
 def generate_graph(json_input: str) -> str:
     """
     Generates a graph using matplotlib in a generalized way.
@@ -207,7 +119,7 @@ def generate_graph(json_input: str) -> str:
     plt.xlabel(xlabel)
     plt.ylabel(ylabel)
     plt.tight_layout()
-    plt.savefig("graph.png")
+    plt.savefig("plot.png")
     plt.close()
     
     return "Chart generated and saved as 'graph.png'."
@@ -316,10 +228,11 @@ def conversation_assistant_node(state: State) -> Command[Literal["orchestrator"]
 
 
 graph_creator_agent = create_react_agent(
-    llm, tools=[
-        execute_graph_from_response, generate_graph
-    ], prompt="You are a helpful AI assistant who must provide a JSON command to generate a graph using matplotlib. "
+    llm, 
+    tools=[generate_graph], 
+    prompt="You are a helpful AI assistant who must provide a JSON command to generate a graph using matplotlib. "
         "Return a JSON in the following format: {\"chart\": \"bar\", \"data\": [{\"label\": \"A\", \"value\": 10}, ...]} "
+        "Plot to the screen the image"
         "Optionally, you can include parameters such as 'title', 'xlabel', 'ylabel', and 'figsize' to customize the graph appearance."
 )
 
@@ -335,15 +248,19 @@ def graph_creator_node(state: State) -> Command[Literal["orchestrator"]]:
     )
 
 
-data_analyst_agent = create_react_agent(llm, tools=[query_bigquery], 
-prompt = "You are a helpful AI assistant who must provide a SQL BigQuery query "
-        "to analyze data as the user requests. You can query data from: "
-        "`qwiklabs-gcp-03-d68fba73ee2d.sales`. "
-        "In BigQuery we have the following table (sales_online): "
+data_analyst_agent = create_react_agent(
+    llm, 
+    tools=[query_bigquery], 
+    prompt = "You are a helpful AI assistant who must provide a SQL BigQuery query "
+        "to analyze data as the user requests. You can query data from 2 tables using BigQuery in `qwiklabs-gcp-03-d68fba73ee2d.sales`. "
+        "Table 1 (sales_online): "
         "Order_ID (INTEGER), Date (DATE), Customer (STRING), Product (STRING), "
         "Quantity (INTEGER), Price_per_unit (INTEGER), Total_Amount (INTEGER), "
-        "Payment_Method (STRING).")
-
+        "Payment_Method (STRING). \n"
+        "Table 2 (product): "
+        "ProductID (INTEGER), ProductName (STRING), Category (STRING), Price (INTEGER)"
+        "You can join the 2 tables to extract relevant informations"
+        )
 
 def data_analyst_node(state: State) -> Command[Literal["orchestrator"]]:
     result = data_analyst_agent.invoke(state)
@@ -372,7 +289,7 @@ agent = workflow.compile()
 png_data = agent.get_graph().draw_mermaid_png()
 
 # Save the image to a file named "graph.png"
-with open("graph_2.png", "wb") as file:
+with open("graph_flow.png", "wb") as file:
     file.write(png_data)
 
 #print("The graph has been saved as 'graph.png'")
