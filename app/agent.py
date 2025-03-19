@@ -10,6 +10,8 @@ from google.cloud import bigquery
 
 import json
 import matplotlib.pyplot as plt
+#import pandas as pd
+import base64
 
 # Configurazioni iniziali
 LOCATION = "us-central1"
@@ -61,11 +63,11 @@ def call_orchestrator(state: MessagesState, config: RunnableConfig) -> dict[str,
     system_message = (
         "You are a helpful AI assistant who must orchestrate an Agentic AI solution."
         "You must decide whether to:\n"
-        "1. Call the query agent to query a certain table from bigquery to retrieve data\n"
+        "1. Call the validator, to check if it's possible to then query a certain table from bigquery to retrieve data\n"
         "2. If the user asks for a graph call the agent specialized in generating a graph using data already retrieved\n"
         "3. If else answer to the user with available data and/or graph\n"
         # "You can decompose the request and process them iteratively.\n"
-        "Return a JSON in the following format:\n If 1: {\"query\": \"User request with additional details if needed\"}\n"
+        "Return a JSON in the following format:\n If 1: {\"validator\": \"User request with additional details if needed\"}\n"
         "If 2: {\"graph\": \"User request with details on the graph style\"}\n"
         "If 3: answer to the user directly if none of the above is applicable\n"
         "Do not call any tools directly, just return the JSON."
@@ -79,13 +81,13 @@ def call_validator(state: MessagesState, config: RunnableConfig) -> dict[str, Ba
     system_message = (
         "You are a helpful AI assistant who must check whether available data can answer the user's question.\n"
         "Analyze the user request and verify if relevant data exists in the following source: `qwiklabs-gcp-03-d68fba73ee2d.sales`.\n"
-        "In BigQuery we have the following table (sales_online): "
+        "In BigQuery we have the following table sales_online: "
         "Order_ID (INTEGER), Date (DATE), Customer (STRING), Product (STRING), "
         "Quantity (INTEGER), Price_per_unit (INTEGER), Total_Amount (INTEGER), "
         "Payment_Method (STRING)."
         "Return a JSON response in one of the following formats:\n"
-        "If data is available: {\"valid\": \"User request with additional details\"}\n"
-        "If data is missing: {\"invalid\": \"User request with additional details on why the data is not sufficient to answer\"}\n"
+        "If data is relevant to answer the user: {\"valid\": \"User request to performm the query\"}\n"
+        "If data is not relevant to ansert the user: {\"invalid\": \"User request with additional details on why the data is not sufficient to answer\"}\n"
         "Do not call any tools directly, just return the JSON."
     )
     messages_with_system = [{"type": "system", "content": system_message}] + state["messages"]
@@ -162,6 +164,7 @@ def execute_query(state: MessagesState) -> dict:
             json_query = content[json_start:json_end].strip()
     
     if json_query:
+        print(json_query)
         result = query_bigquery(json_query)
         result_message = AIMessage(
             content=f"Ho eseguito la query e ecco i risultati:\n\n{result}"
@@ -208,8 +211,14 @@ def execute_graph_from_response(state: MessagesState) -> dict:
 
     if json_command:
         result = generate_graph(json_command)
+
+        # TODO sistema
+        with open("graph.png", "rb") as image_file:
+            image_data = base64.b64encode(image_file.read()).decode("utf-8")
+        image_html = f'<img src="data:image/png;base64,{image_data}>'
+
         result_message = AIMessage(
-            content=f"Ho generato il grafico: {result}"
+            content=f"Ho generato il grafico: {image_html}"
         )
         return {"messages": [result_message]}
 
@@ -302,13 +311,13 @@ def check_validity(state: MessagesState) -> str:
 
 def how_to_continue(state: MessagesState) -> str:
     """
-    Se l'ultimo messaggio contiene un comando JSON, prosegue con l'esecuzione della query,
+    Se l'ultimo messaggio contiene un comando JSON, si procede con validator o graph,
     altrimenti termina.
     """
     last_message = state["messages"][-1]
     if hasattr(last_message, 'content') and last_message.content:
         content = last_message.content
-        if isinstance(content, str) and ("```json" in content or "{\"query\":" in content and not "{\"graph\":" in content):            
+        if isinstance(content, str) and ("```json" in content or "{\"validator\":" in content and not "{\"graph\":" in content):            
             return "validator"
         elif isinstance(content, str) and ("```json" in content or "{\"graph\":" in content):            
             return "decomposer_graph"
@@ -329,7 +338,7 @@ workflow.add_conditional_edges("orchestrator", how_to_continue)
 workflow.add_conditional_edges("validator", check_validity)
 workflow.add_edge("decomposer_queries", "execute_queries")
 workflow.add_edge("decomposer_graph", "generate_graph")
-workflow.add_edge("execute_queries", "finalizer")
+workflow.add_edge("execute_queries", "orchestrator")
 workflow.add_edge("generate_graph", "finalizer")
 workflow.add_edge("finalizer", END)
 
