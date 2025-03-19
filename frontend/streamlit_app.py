@@ -37,14 +37,14 @@ EMPTY_CHAT_NAME = "Empty chat"
 def setup_page() -> None:
     """Configure the Streamlit page settings."""
     st.set_page_config(
-        page_title="Avvale Playground",
+        page_title="Avvale Business Reporting Assistant",
         layout="wide",
         initial_sidebar_state="auto",
         page_icon="frontend/assets/logo.png",
         menu_items=None,
     )
     st.markdown(
-        "<h1 style='text-align: center;'>🚀 Avvale Playground</h1>",
+        "<h1 style='text-align: center;'>🚀 Avvale Business Reporting Assistant</h1>",
         unsafe_allow_html=True,
     )
 
@@ -137,6 +137,12 @@ def display_message_buttons(
                 type="primary",
                 on_click=partial(MessageEditing.delete_message, st, index),
             )
+    if message["type"] == "tool":
+        # Look up the corresponding tool call input by ID
+        tool_call_id = message["tool_call_id"]
+        print(1, tool_call_id)
+        if 'graph' in message['content']:
+            st.image("graph.png", caption="")
 
     if st.session_state[edit_button]:
         st.text_area(
