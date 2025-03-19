@@ -160,8 +160,9 @@ options = members + ["FINISH"]
 orchestrator_system_prompt = (
     "You are a supervisor tasked with managing a conversation between the"
     f" following workers: {members}. Given the following user request,"
-    " respond with the worker to act next. Each worker will perform a"
-    " task and respond with their results and status. When finished,"
+    " respond with the worker to act next. "
+    " If the user do not ask anything specific, just respond with FINISH."
+    " Each worker will perform a task and respond with their results and status. When finished,"
     " respond with FINISH."
 )
 
@@ -186,12 +187,12 @@ def orchestrator_node(state: State) -> Command[Literal[*members, "__end__"]]:
     response = llm.with_structured_output(TaskAssignment).invoke(messages)
     goto = response.next
     if goto == "FINISH":
-        # Invece di proseguire, crea un messaggio finale per l'utente
-        final_message = AIMessage(content="Ecco il risultato finale del processo.")
-        # Aggiorna lo stato aggiungendo il messaggio finale
-        state["messages"].append(final_message)
-        # Termina il workflow restituendo lo stato aggiornato
-        return Command(goto=END, update={"messages": state["messages"]})
+        ## Invece di proseguire, crea un messaggio finale per l'utente
+        #final_message = AIMessage(content="Ecco il risultato finale del processo.")
+        ## Aggiorna lo stato aggiungendo il messaggio finale
+        #state["messages"].append(final_message)
+        ## Termina il workflow restituendo lo stato aggiornato
+        return Command(goto=END) #, update={"messages": state["messages"]})
 
     return Command(goto=goto, update={"next": goto})
 
